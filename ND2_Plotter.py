@@ -254,12 +254,17 @@ class Window(QWidget):
 		super().__init__()
 		self.green_active = True
 		self.red_active = True
-		self.green_lower = 180
-		self.green_upper = 1000
-		self.green_max = 1000
-		self.red_lower = 180
-		self.red_upper = 1000
-		self.red_max = 1000
+		self.threshold_defaults = np.array([180,1000,1000,180,1000,1000])
+		self.green_lower = self.threshold_defaults[0]
+		self.green_upper = self.threshold_defaults[1]
+		self.green_cutoff = self.threshold_defaults[2]
+		self.green_max = np.amax([self.threshold_defaults[1],
+								  self.threshold_defaults[2]])
+		self.red_lower = self.threshold_defaults[3]
+		self.red_upper = self.threshold_defaults[4]
+		self.red_cutoff = self.threshold_defaults[5]
+		self.red_max = np.amax([self.threshold_defaults[4],
+								self.threshold_defaults[5]])
 		self.x_lower = 0
 		self.x_upper = 0
 		self.x_size = 512
@@ -283,12 +288,13 @@ class Window(QWidget):
 		self.click_id = 0
 		self.move_id = 0
 		self.position = np.array([0,0])
-		self.neighbourhood_size = 9
-		self.threshold_difference = 1
-		self.minimum_distance = 4
-		self.gauss_deviation = 1
-		self.max_layer_distance = 6
-		self.number_layer_cell = 4
+		self.advanced_defaults = np.array([9,1,4,1,6,4])
+		self.neighbourhood_size = self.advanced_defaults[0]
+		self.threshold_difference = self.advanced_defaults[1]
+		self.minimum_distance = self.advanced_defaults[2]
+		self.gauss_deviation = self.advanced_defaults[3]
+		self.max_layer_distance = self.advanced_defaults[4]
+		self.number_layer_cell = self.advanced_defaults[5]
 		self.scale = np.array([0.232, 0.232, 0.479])
 		self.dapi_centres = np.zeros((0,2))
 		self.green_cells = np.zeros((0,1))
@@ -335,46 +341,146 @@ class Window(QWidget):
 		z_select_layout.addWidget(self.slider_z)
 		options_layout.addLayout(z_select_layout)
 		tabs = QTabWidget()
-		tabs.setMaximumWidth(160)
+		tabs.setMinimumWidth(180)
+		tabs.setMaximumWidth(180)
 		# green channel options tab
 		tab_green = QWidget()
 		tab_green.layout = QVBoxLayout()
 		# checkbox to turn off green channel
-		self.checkbox_green = QCheckBox("active")
+		self.checkbox_green = QCheckBox("green channel active")
 		self.checkbox_green.setChecked(self.green_active)
 		self.checkbox_green.stateChanged.connect(self.green_checkbox)
 		tab_green.layout.addWidget(self.checkbox_green)
 		# sliders for green thresholds
-		slider_layout_green = QHBoxLayout()
+		threshold_layout_green = QHBoxLayout()
+		# green min
+		threshold_layout_green_min = QVBoxLayout()
+		slider_layout_green_min = QHBoxLayout()
 		self.slider_green_min = QSlider(Qt.Vertical)
 		self.slider_green_min.valueChanged.connect(self.threshold_green_lower)
-		slider_layout_green.addWidget(self.slider_green_min)
+		slider_layout_green_min.addWidget(self.slider_green_min)
+		label_green_min = QLabel('lower')
+		label_green_min.setAlignment(Qt.AlignCenter)
+		self.textbox_green_min = QLineEdit()
+		self.textbox_green_min.setMaxLength(4)
+		self.textbox_green_min.setFixedWidth(50)
+		self.textbox_green_min.setValidator(QIntValidator())
+		self.textbox_green_min.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_green_min.addLayout(slider_layout_green_min)
+		threshold_layout_green_min.addWidget(label_green_min)
+		threshold_layout_green_min.addWidget(self.textbox_green_min)
+		# green max
+		threshold_layout_green_max = QVBoxLayout()
+		slider_layout_green_max = QHBoxLayout()
 		self.slider_green_max = QSlider(Qt.Vertical)
 		self.slider_green_max.valueChanged.connect(self.threshold_green_upper)
-		slider_layout_green.addWidget(self.slider_green_max)
-		tab_green.layout.addLayout(slider_layout_green)
+		slider_layout_green_max.addWidget(self.slider_green_max)
+		label_green_max = QLabel('upper')
+		label_green_max.setAlignment(Qt.AlignCenter)
+		self.textbox_green_max = QLineEdit()
+		self.textbox_green_max.setMaxLength(4)
+		self.textbox_green_max.setFixedWidth(50)
+		self.textbox_green_max.setValidator(QIntValidator())
+		self.textbox_green_max.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_green_max.addLayout(slider_layout_green_max)
+		threshold_layout_green_max.addWidget(label_green_max)
+		threshold_layout_green_max.addWidget(self.textbox_green_max)
+		# green cutoff
+		threshold_layout_green_cut = QVBoxLayout()
+		slider_layout_green_cut = QHBoxLayout()
+		self.slider_green_cut = QSlider(Qt.Vertical)
+		self.slider_green_cut.valueChanged.connect(self.threshold_green_cutoff)
+		slider_layout_green_cut.addWidget(self.slider_green_cut)
+		label_green_cut = QLabel('cutoff')
+		label_green_cut.setAlignment(Qt.AlignCenter)
+		self.textbox_green_cut = QLineEdit()
+		self.textbox_green_cut.setMaxLength(4)
+		self.textbox_green_cut.setFixedWidth(50)
+		self.textbox_green_cut.setValidator(QIntValidator())
+		self.textbox_green_cut.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_green_cut.addLayout(slider_layout_green_cut)
+		threshold_layout_green_cut.addWidget(label_green_cut)
+		threshold_layout_green_cut.addWidget(self.textbox_green_cut)
+		#
+		threshold_layout_green.addLayout(threshold_layout_green_min)
+		threshold_layout_green.addLayout(threshold_layout_green_max)
+		threshold_layout_green.addLayout(threshold_layout_green_cut)
+		tab_green.layout.addLayout(threshold_layout_green)
 		tab_green.setLayout(tab_green.layout)
 		tabs.addTab(tab_green, 'green')
 		# red channel options tab
 		tab_red = QWidget()
 		tab_red.layout = QVBoxLayout()
 		# checkbox to turn off red channel
-		self.checkbox_red = QCheckBox("active")
+		self.checkbox_red = QCheckBox("red channel active")
 		self.checkbox_red.setChecked(self.red_active)
 		self.checkbox_red.stateChanged.connect(self.red_checkbox)
 		tab_red.layout.addWidget(self.checkbox_red)
 		# sliders for red thresholds
-		slider_layout_red = QHBoxLayout()
+		threshold_layout_red = QHBoxLayout()
+		# red min
+		threshold_layout_red_min = QVBoxLayout()
+		slider_layout_red_min = QHBoxLayout()
 		self.slider_red_min = QSlider(Qt.Vertical)
 		self.slider_red_min.valueChanged.connect(self.threshold_red_lower)
-		slider_layout_red.addWidget(self.slider_red_min)
+		slider_layout_red_min.addWidget(self.slider_red_min)
+		label_red_min = QLabel('lower')
+		label_red_min.setAlignment(Qt.AlignCenter)
+		self.textbox_red_min = QLineEdit()
+		self.textbox_red_min.setMaxLength(4)
+		self.textbox_red_min.setFixedWidth(50)
+		self.textbox_red_min.setValidator(QIntValidator())
+		self.textbox_red_min.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_red_min.addLayout(slider_layout_red_min)
+		threshold_layout_red_min.addWidget(label_red_min)
+		threshold_layout_red_min.addWidget(self.textbox_red_min)
+		# red max
+		threshold_layout_red_max = QVBoxLayout()
+		slider_layout_red_max = QHBoxLayout()
 		self.slider_red_max = QSlider(Qt.Vertical)
 		self.slider_red_max.valueChanged.connect(self.threshold_red_upper)
-		slider_layout_red.addWidget(self.slider_red_max)
-		tab_red.layout.addLayout(slider_layout_red)
+		slider_layout_red_max.addWidget(self.slider_red_max)
+		label_red_max = QLabel('upper')
+		label_red_max.setAlignment(Qt.AlignCenter)
+		self.textbox_red_max = QLineEdit()
+		self.textbox_red_max.setMaxLength(4)
+		self.textbox_red_max.setFixedWidth(50)
+		self.textbox_red_max.setValidator(QIntValidator())
+		self.textbox_red_max.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_red_max.addLayout(slider_layout_red_max)
+		threshold_layout_red_max.addWidget(label_red_max)
+		threshold_layout_red_max.addWidget(self.textbox_red_max)
+		# red cutoff
+		threshold_layout_red_cut = QVBoxLayout()
+		slider_layout_red_cut = QHBoxLayout()
+		self.slider_red_cut = QSlider(Qt.Vertical)
+		self.slider_red_cut.valueChanged.connect(self.threshold_red_cutoff)
+		slider_layout_red_cut.addWidget(self.slider_red_cut)
+		label_red_cut = QLabel('cutoff')
+		label_red_cut.setAlignment(Qt.AlignCenter)
+		self.textbox_red_cut = QLineEdit()
+		self.textbox_red_cut.setMaxLength(4)
+		self.textbox_red_cut.setFixedWidth(50)
+		self.textbox_red_cut.setValidator(QIntValidator())
+		self.textbox_red_cut.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_red_cut.addLayout(slider_layout_red_cut)
+		threshold_layout_red_cut.addWidget(label_red_cut)
+		threshold_layout_red_cut.addWidget(self.textbox_red_cut)
+		#
+		threshold_layout_red.addLayout(threshold_layout_red_min)
+		threshold_layout_red.addLayout(threshold_layout_red_max)
+		threshold_layout_red.addLayout(threshold_layout_red_cut)
+		tab_red.layout.addLayout(threshold_layout_red)
 		tab_red.setLayout(tab_red.layout)
 		tabs.addTab(tab_red, 'red')
 		self.setup_threshold_sliders()
+		self.setup_threshold_textboxes()
 		options_layout.addWidget(tabs)
 		zoom_layout = QVBoxLayout()
 		#
@@ -382,7 +488,7 @@ class Window(QWidget):
 		x_min_label = QLabel('X min:')
 		x_min_label.setAlignment(Qt.AlignCenter)
 		x_min_layout.addWidget(x_min_label)
-		self.textbox_x_min = QLineEdit('test')
+		self.textbox_x_min = QLineEdit()
 		self.textbox_x_min.setMaxLength(4)
 		self.textbox_x_min.setFixedWidth(50)
 		self.textbox_x_min.setValidator(QIntValidator())
@@ -572,6 +678,10 @@ class Window(QWidget):
 												self.advanced_textbox_select)
 		advanced_layout.addWidget(self.textbox_layer_number)
 		#
+		self.button_advanced_defaults = QPushButton()
+		self.button_advanced_defaults.setText('Defaults')
+		self.button_advanced_defaults.clicked.connect(self.reset_defaults)
+		advanced_layout.addWidget(self.button_advanced_defaults)
 		# Nest the inner layouts into the outer layout
 		outer_layout.addLayout(main_layout)
 		outer_layout.addLayout(buttons_layout)
@@ -641,6 +751,10 @@ class Window(QWidget):
 		self.slider_green_max.setMaximum(self.green_max)
 		self.slider_green_max.setSingleStep(1)
 		self.slider_green_max.setValue(self.green_upper)
+		self.slider_green_cut.setMinimum(0)
+		self.slider_green_cut.setMaximum(self.green_max)
+		self.slider_green_cut.setSingleStep(1)
+		self.slider_green_cut.setValue(self.green_cutoff)
 		self.slider_red_min.setMinimum(0)
 		self.slider_red_min.setMaximum(self.red_max)
 		self.slider_red_min.setSingleStep(1)
@@ -649,6 +763,10 @@ class Window(QWidget):
 		self.slider_red_max.setMaximum(self.red_max)
 		self.slider_red_max.setSingleStep(1)
 		self.slider_red_max.setValue(self.red_upper)
+		self.slider_red_cut.setMinimum(0)
+		self.slider_red_cut.setMaximum(self.red_max)
+		self.slider_red_cut.setSingleStep(1)
+		self.slider_red_cut.setValue(self.red_cutoff)
 	
 	def setup_bound_textboxes (self):
 		self.textbox_x_min.setText(str(self.x_lower))
@@ -657,6 +775,20 @@ class Window(QWidget):
 		self.textbox_y_max.setText(str(self.y_upper))
 		self.textbox_z_min.setText(str(self.z_lower))
 		self.textbox_z_max.setText(str(self.z_upper))
+	
+	def setup_advanced_textboxes (self):
+		self.textbox_neighbourhood.setText(str(self.neighbourhood_size))
+		self.textbox_threshold.setText(str(self.threshold_difference))
+		self.textbox_distance.setText(str(self.minimum_distance))
+		self.textbox_guassian.setText(str(self.gauss_deviation))
+		self.textbox_layer_distance.setText(str(self.max_layer_distance))
+		self.textbox_layer_number.setText(str(self.number_layer_cell))
+	
+	def setup_threshold_textboxes (self):
+		self.textbox_green_min.setText(str(self.green_lower))
+		self.textbox_green_max.setText(str(self.green_upper))
+		self.textbox_red_min.setText(str(self.red_lower))
+		self.textbox_red_max.setText(str(self.red_upper))
 	
 	def z_min_button (self):
 		self.z_lower = self.z_level
@@ -684,18 +816,32 @@ class Window(QWidget):
 	
 	def threshold_green_lower (self):
 		self.green_lower = self.slider_green_min.value()
+		self.textbox_green_min.setText(str(self.green_lower))
 		self.replot()
 	
 	def threshold_green_upper (self):
 		self.green_upper = self.slider_green_max.value()
+		self.textbox_green_max.setText(str(self.green_upper))
+		self.replot()
+	
+	def threshold_green_cutoff (self):
+		self.green_cutoff = self.slider_green_cut.value()
+		self.textbox_green_cut.setText(str(self.green_cutoff))
 		self.replot()
 	
 	def threshold_red_lower (self):
 		self.red_lower = self.slider_red_min.value()
+		self.textbox_red_min.setText(str(self.red_lower))
 		self.replot()
 	
 	def threshold_red_upper (self):
 		self.red_upper = self.slider_red_max.value()
+		self.textbox_red_max.setText(str(self.red_upper))
+		self.replot()
+	
+	def threshold_red_cutoff (self):
+		self.red_cutoff = self.slider_red_cut.value()
+		self.textbox_red_cut.setText(str(self.red_cutoff))
 		self.replot()
 	
 	def green_checkbox (self):
@@ -739,7 +885,30 @@ class Window(QWidget):
 			self.z_upper = self.z_size-1
 		if self.z_upper < self.z_lower:
 			self.z_upper = self.z_lower
+		self.setup_bound_textboxes()
 		self.replot()
+	
+	def threshold_textbox_select (self):
+		self.green_lower = int(self.textbox_green_min.text())
+		if self.green_lower < 0:
+			self.green_lower = 0
+		self.green_upper = int(self.textbox_green_max.text())
+		if self.green_upper > self.green_max:
+			self.green_upper = self.green_max
+		self.green_cutoff = int(self.textbox_green_cutoff.text())
+		if self.green_cutoff > self.green_max:
+			self.green_cutoff = self.green_max
+		self.red_lower = int(self.textbox_red_min.text())
+		if self.red_lower < 0:
+			self.red_lower = 0
+		self.red_upper = int(self.textbox_red_max.text())
+		if self.red_upper > self.red_max:
+			self.red_upper = self.red_max
+		self.red_cutoff = int(self.textbox_red_cutoff.text())
+		if self.red_cutoff > self.red_max:
+			self.red_cutoff = self.red_max
+		self.setup_threshold_textboxes()
+		self.setup_threshold_sliders()
 	
 	def advanced_textbox_select (self):
 		self.neighbourhood_size = int(self.textbox_neighbourhood.text())
@@ -748,6 +917,23 @@ class Window(QWidget):
 		self.gauss_deviation = int(self.textbox_guassian.text())
 		self.max_layer_distance = int(self.textbox_layer_distance.text())
 		self.number_layer_cell = int(self.textbox_layer_number.text())
+	
+	def reset_defaults (self):
+		self.neighbourhood_size = self.advanced_defaults[0]
+		self.threshold_difference = self.advanced_defaults[1]
+		self.minimum_distance = self.advanced_defaults[2]
+		self.gauss_deviation = self.advanced_defaults[3]
+		self.max_layer_distance = self.advanced_defaults[4]
+		self.number_layer_cell = self.advanced_defaults[5]
+		self.setup_advanced_textboxes()
+		self.green_lower = self.threshold_defaults[0]
+		self.green_upper = self.threshold_defaults[1]
+		self.green_cutoff = self.threshold_defaults[2]
+		self.red_lower = self.threshold_defaults[3]
+		self.red_upper = self.threshold_defaults[4]
+		self.red_cutoff = self.threshold_defaults[5]
+		self.setup_threshold_textboxes()
+		self.setup_threshold_sliders()
 	
 	def select_bounds (self):
 		self.zoomed = False
@@ -1036,6 +1222,7 @@ class Window(QWidget):
 		#					np.where(red_blur < self.red_upper,
 		#								red_blur, self.red_upper), 0)
 		for index,(c_x,c_y) in enumerate(dapi_centres):
+			# median seems to work better than mean.
 			if green_image is not None:
 				if np.median(green_blur[c_y-delta:c_y+delta, # mean ?
 									  c_x-delta:c_x+delta]) > self.green_lower:
@@ -1044,6 +1231,13 @@ class Window(QWidget):
 				if np.median(red_blur[c_y-delta:c_y+delta, # mean ?
 									c_x-delta:c_x+delta]) > self.red_lower:
 					red_cells[index] = True
+			if red_image is not None and green_image is not None:
+				if np.median(green_blur[c_y-delta:c_y+delta, # mean ?
+									  c_x-delta:c_x+delta]) > self.green_cutoff:
+					red_cells[index] = False
+				if np.median(red_blur[c_y-delta:c_y+delta, # mean ?
+									c_x-delta:c_x+delta]) > self.red_cutoff:
+					green_cells[index] = False
 		return dapi_centres, green_cells, red_cells
 	
 	def find_centres (self, image):
@@ -1118,24 +1312,6 @@ class Window(QWidget):
 						   np.amax(positions[:,1]) - np.amin(positions[:,1]),
 						   np.amax(positions[:,2]) - np.amin(positions[:,2])))
 		plt.show()
-
-#class MPL3DCanvas(FigureCanvas):
-#	def __init__ (self, parent=None, width=8, height=8, dpi=100):
-#		self.fig = Figure(figsize=(width, height), dpi=dpi)
-#		self.ax = self.fig.add_subplot(111, projection='3d')
-#		FigureCanvas.__init__(self, self.fig)
-#		self.setParent(parent)
-#		FigureCanvas.setSizePolicy(self,
-#				QSizePolicy.Expanding,
-#				QSizePolicy.Expanding)
-#		FigureCanvas.updateGeometry(self)
-#		self.fig.tight_layout()
-#		self.positions = np.zeros((0,3))
-#		self.green_cells = np.zeros((0,1))
-#		self.red_cells = np.zeros((0,1))
-#		self.dapi_plot = None
-#		self.green_plot = None
-#		self.red_plot = None
 
 if __name__ == "__main__":
 	app = QApplication(sys.argv)
