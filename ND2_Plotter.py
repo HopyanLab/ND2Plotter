@@ -895,7 +895,7 @@ class Window(QWidget):
 		self.green_upper = int(self.textbox_green_max.text())
 		if self.green_upper > self.green_max:
 			self.green_upper = self.green_max
-		self.green_cutoff = int(self.textbox_green_cutoff.text())
+		self.green_cutoff = int(self.textbox_green_cut.text())
 		if self.green_cutoff > self.green_max:
 			self.green_cutoff = self.green_max
 		self.red_lower = int(self.textbox_red_min.text())
@@ -904,7 +904,7 @@ class Window(QWidget):
 		self.red_upper = int(self.textbox_red_max.text())
 		if self.red_upper > self.red_max:
 			self.red_upper = self.red_max
-		self.red_cutoff = int(self.textbox_red_cutoff.text())
+		self.red_cutoff = int(self.textbox_red_cut.text())
 		if self.red_cutoff > self.red_max:
 			self.red_cutoff = self.red_max
 		self.setup_threshold_textboxes()
