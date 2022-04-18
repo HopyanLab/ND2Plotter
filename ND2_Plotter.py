@@ -254,6 +254,8 @@ class Window(QWidget):
 		super().__init__()
 		self.green_active = True
 		self.red_active = True
+		self.green_cutoff_active = False
+		self.red_cutoff_active = False
 		self.threshold_defaults = np.array([180,1000,1000,180,1000,1000])
 		self.green_lower = self.threshold_defaults[0]
 		self.green_upper = self.threshold_defaults[1]
@@ -351,6 +353,12 @@ class Window(QWidget):
 		self.checkbox_green.setChecked(self.green_active)
 		self.checkbox_green.stateChanged.connect(self.green_checkbox)
 		tab_green.layout.addWidget(self.checkbox_green)
+		#checkbox to turn on green cutoff feature
+		self.checkbox_green_cutoff = QCheckBox("green cutoff active")
+		self.checkbox_green_cutoff.setChecked(self.green_cutoff_active)
+		self.checkbox_green_cutoff.stateChanged.connect(
+												self.green_cutoff_checkbox)
+		tab_green.layout.addWidget(self.checkbox_green_cutoff)
 		# sliders for green thresholds
 		threshold_layout_green = QHBoxLayout()
 		# green min
@@ -419,6 +427,12 @@ class Window(QWidget):
 		self.checkbox_red.setChecked(self.red_active)
 		self.checkbox_red.stateChanged.connect(self.red_checkbox)
 		tab_red.layout.addWidget(self.checkbox_red)
+		#checkbox to turn on red cutoff feature
+		self.checkbox_red_cutoff = QCheckBox("red cutoff active")
+		self.checkbox_red_cutoff.setChecked(self.red_cutoff_active)
+		self.checkbox_red_cutoff.stateChanged.connect(
+												self.red_cutoff_checkbox)
+		tab_red.layout.addWidget(self.checkbox_red_cutoff)
 		# sliders for red thresholds
 		threshold_layout_red = QHBoxLayout()
 		# red min
@@ -852,6 +866,14 @@ class Window(QWidget):
 		self.red_active = self.checkbox_red.isChecked()
 		self.replot()
 	
+	def green_cutoff_checkbox (self):
+		self.green_cutoff_active = self.checkbox_green_cutoff.isChecked()
+		self.replot()
+	
+	def red_cutoff_checkbox (self):
+		self.red_cutoff_active = self.checkbox_red_cutoff.isChecked()
+		self.replot()
+	
 	def zoom_checkbox (self):
 		self.zoomed = self.checkbox_zoom.isChecked()
 		self.replot()
@@ -934,6 +956,10 @@ class Window(QWidget):
 		self.red_cutoff = self.threshold_defaults[5]
 		self.setup_threshold_textboxes()
 		self.setup_threshold_sliders()
+		self.checkbox_green_cutoff.setChecked(False)
+		self.green_cutoff_active = False
+		self.checkbox_red_cutoff.setChecked(False)
+		self.red_cutoff_active = False
 	
 	def select_bounds (self):
 		self.zoomed = False
@@ -1213,6 +1239,8 @@ class Window(QWidget):
 		#	green_blur = np.where(green_blur > self.green_lower,
 		#					np.where(green_blur < self.green_upper,
 		#								green_blur, self.green_upper), 0)
+			green_blur = np.where(green_blur < self.green_upper,
+										green_blur, self.green_upper)
 		red_cells = np.zeros(dapi_centres.shape[0], dtype = bool)
 		if red_image is not None:
 			red_blur = red_image[self.y_lower:self.y_upper,
@@ -1221,6 +1249,8 @@ class Window(QWidget):
 		#	red_blur = np.where(red_blur > self.red_lower,
 		#					np.where(red_blur < self.red_upper,
 		#								red_blur, self.red_upper), 0)
+			red_blur = np.where(red_blur < self.red_upper,
+										red_blur, self.red_upper)
 		for index,(c_x,c_y) in enumerate(dapi_centres):
 			# median seems to work better than mean.
 			if green_image is not None:
@@ -1232,11 +1262,13 @@ class Window(QWidget):
 									c_x-delta:c_x+delta]) > self.red_lower:
 					red_cells[index] = True
 			if red_image is not None and green_image is not None:
-				if np.median(green_blur[c_y-delta:c_y+delta, # mean ?
-									  c_x-delta:c_x+delta]) > self.green_cutoff:
+				if self.green_cutoff_active and \
+				   np.median(green_blur[c_y-delta:c_y+delta, # mean ?
+								c_x-delta:c_x+delta]) > self.green_cutoff:
 					red_cells[index] = False
-				if np.median(red_blur[c_y-delta:c_y+delta, # mean ?
-									c_x-delta:c_x+delta]) > self.red_cutoff:
+				if self.red_cutoff_active and \
+				   np.median(red_blur[c_y-delta:c_y+delta, # mean ?
+								c_x-delta:c_x+delta]) > self.red_cutoff:
 					green_cells[index] = False
 		return dapi_centres, green_cells, red_cells
 	
