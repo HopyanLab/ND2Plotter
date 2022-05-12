@@ -256,17 +256,16 @@ class Window(QWidget):
 		self.red_active = True
 		self.green_cutoff_active = False
 		self.red_cutoff_active = False
-		self.threshold_defaults = np.array([180,1000,1000,180,1000,1000])
+		self.threshold_defaults = np.array([180,2000,4095,4095,
+											180,2000,4095,4095])
 		self.green_lower = self.threshold_defaults[0]
 		self.green_upper = self.threshold_defaults[1]
 		self.green_cutoff = self.threshold_defaults[2]
-		self.green_max = np.amax([self.threshold_defaults[1],
-								  self.threshold_defaults[2]])
-		self.red_lower = self.threshold_defaults[3]
-		self.red_upper = self.threshold_defaults[4]
-		self.red_cutoff = self.threshold_defaults[5]
-		self.red_max = np.amax([self.threshold_defaults[4],
-								self.threshold_defaults[5]])
+		self.green_max = self.threshold_defaults[3]
+		self.red_lower = self.threshold_defaults[4]
+		self.red_upper = self.threshold_defaults[5]
+		self.red_cutoff = self.threshold_defaults[6]
+		self.red_max = self.threshold_defaults[7]
 		self.x_lower = 0
 		self.x_upper = 0
 		self.x_size = 512
@@ -951,9 +950,9 @@ class Window(QWidget):
 		self.green_lower = self.threshold_defaults[0]
 		self.green_upper = self.threshold_defaults[1]
 		self.green_cutoff = self.threshold_defaults[2]
-		self.red_lower = self.threshold_defaults[3]
-		self.red_upper = self.threshold_defaults[4]
-		self.red_cutoff = self.threshold_defaults[5]
+		self.red_lower = self.threshold_defaults[4]
+		self.red_upper = self.threshold_defaults[5]
+		self.red_cutoff = self.threshold_defaults[6]
 		self.setup_threshold_textboxes()
 		self.setup_threshold_sliders()
 		self.checkbox_green_cutoff.setChecked(False)
