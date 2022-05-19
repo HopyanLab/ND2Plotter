@@ -13,11 +13,15 @@ from matplotlib.backends.backend_qt5agg import (
 from matplotlib.figure import Figure
 from matplotlib.colors import LinearSegmentedColormap
 from matplotlib import colors, ticker, cm
+from matplotlib.collections import LineCollection
 from mpl_toolkits.mplot3d.axes3d import Axes3D
 from PIL import Image
-from scipy import ndimage as ndimage
-from scipy.ndimage import filters as filters
+from scipy import ndimage as ndi
 from scipy.spatial import Delaunay, Voronoi, ConvexHull
+from trimesh import Trimesh
+from trimesh.repair import fix_normals
+from trimesh.graph import connected_components
+from trimesh.smoothing import filter_humphrey
 import mahotas as mh
 from PyQt5.QtCore import Qt, QPoint, QRect, QSize
 from PyQt5.QtGui import QIntValidator, QMouseEvent
@@ -88,6 +92,63 @@ transparent_cmap = LinearSegmentedColormap('transparent_cmap',
 cm.register_cmap(cmap=transparent_cmap)
 
 ################################################################################
+# class for triangulation #
+###########################
+
+class SimplicialComplex ():
+	def __init__ (self, points = None,
+						simplices = None,
+						neighbours = None):
+		self.points = points
+		self.simplices = simplices
+		self.neighbours = neighbours
+		self.longest_edges = None
+		if simplices is not None:
+			self.calc_longest_edges()
+	
+	def calc_longest_edges (self):
+	#	self.longest_edges = np.array(self.simplices.shape[0], dtype = float)
+		point_array = self.points[self.simplices]
+		self.longest_edges = np.amax(np.linalg.norm(
+						point_array[:,np.newaxis,:,:] - \
+						point_array[:,:,np.newaxis,:],
+							axis=-1),axis=(1,2))
+	
+	def remove_simplex (self, index):
+		self.neighbours[self.neighbours == index] = -1
+		self.neighbours[self.neighbours > index] -= 1
+		self.simplices = np.delete(self.simplices, index, axis=0)
+		self.longest_edges = np.delete(self.longest_edges, index)
+	
+	def remove_long_simplices (self, length):
+		for index in np.arange(self.simplices.shape[0]-1,-1,-1):
+			if self.longest_edges[index] > length:
+				self.remove_simplex(index)
+
+################################################################################
+# function to quickly calclate shortest distance to line segment #
+##################################################################
+
+def lineseg_dists(p, a, b):
+	# Handle case where p is a single point, i.e. 1d array.
+	p = np.atleast_2d(p)
+	# possibly faster norms with numba
+	if np.all(a == b):
+		return np.linalg.norm(p - a, axis=1)
+	# normalized tangent vector
+	d = np.divide(b - a, np.linalg.norm(b - a))
+	# signed parallel distance components
+	s = np.dot(a - p, d)
+	t = np.dot(p - b, d)
+	# clamped parallel distance
+	h = np.maximum.reduce([s, t, np.zeros(len(p))])
+	# perpendicular distance component, as before
+	# note that for the 3D case these will be vectors
+	c = np.cross(p - a, d)
+	# use hypot for Pythagoras to improve accuracy
+	return np.hypot(h, c)
+
+################################################################################
 # canvas widget to put matplotlib plot #
 ########################################
 
@@ -113,19 +174,31 @@ class MPLCanvas(FigureCanvas):
 		self.show_green = True
 		self.show_red = True
 		self.show_box = False
+		self.show_mesh = False
 		self.select_box = None
-		self.dapi_centres = np.zeros((0,2))
-		self.green_cells = np.zeros((0,1))
-		self.red_cells = np.zeros((0,1))
+		self.dapi_centres = np.zeros((0,2), dtype = float)
+		self.green_cells = np.zeros((0,1), dtype = bool)
+		self.red_cells = np.zeros((0,1), dtype = bool)
+		self.epi_cells = np.zeros((0,1), dtype = bool)
+		self.edges = np.zeros((0,2), dtype = int)
+		self.edges_outer = np.zeros((0,1), dtype = bool)
+		self.edges_outer_red = np.zeros((0,1), dtype = bool)
+		self.edges_outer_green = np.zeros((0,1), dtype = bool)
 		self.dapi_centres_plot = None
 		self.green_centres_plot = None
 		self.red_centres_plot = None
+		self.epi_centres_plot = None
+		self.edges_plot = None
+		self.edges_outer_plot = None
+		self.edges_outer_red_plot = None
+		self.edges_outer_green_plot = None
+		self.edges_outer_purple_plot = None
 		self.plot()
 	
 	def update_images (self, dapi_image, green_image, red_image,
 						show_green = True, show_red = True,
 						box = np.array([[0,512], [0,512]]),
-						show_box = False):
+						show_box = False, show_mesh = False):
 		self.dapi_image = dapi_image
 		self.green_image = green_image
 		self.red_image = red_image
@@ -133,12 +206,21 @@ class MPLCanvas(FigureCanvas):
 		self.show_red = show_red
 		self.box = box
 		self.show_box = show_box
+		self.show_mesh = show_mesh
 		self.plot()
 	
-	def update_centres (self, dapi_centres, green_cells, red_cells):
+	def update_centres (self, dapi_centres,
+							green_cells = None, red_cells = None,
+							epi_cells = None, edges = None, edges_outer = None,
+							edges_outer_red = None, edges_outer_green = None):
 		self.dapi_centres = dapi_centres
 		self.green_cells = green_cells
 		self.red_cells = red_cells
+		self.epi_cells = epi_cells
+		self.edges = edges
+		self.edges_outer = edges_outer
+		self.edges_outer_red = edges_outer_red
+		self.edges_outer_green = edges_outer_green
 		self.plot()
 	
 	def plot (self):
@@ -174,7 +256,7 @@ class MPLCanvas(FigureCanvas):
 										 (self.box[1,0], self.box[1,0],
 											self.box[1,1], self.box[1,1],
 												self.box[1,0]),
-										 color='yellow', linestyle='-')
+										 color='gold', linestyle='-')
 		else:
 			self.box_plot = None
 	
@@ -192,18 +274,63 @@ class MPLCanvas(FigureCanvas):
 		scale = 800./(self.dapi_image.shape[0]) + \
 				800./(self.dapi_image.shape[1])
 		if self.dapi_centres.shape[0] > 0:
+			if self.epi_cells is not None:
+				if self.epi_cells.shape[0] > 0:
+					self.epi_centres_plot = self.ax.plot(
+									self.dapi_centres[self.epi_cells,0],
+									self.dapi_centres[self.epi_cells,1],
+									color = 'royalblue', linestyle = '', 
+									marker = 'o', markersize = scale*1.9)
 			self.dapi_centres_plot = self.ax.plot(
 									self.dapi_centres[:,0],
 									self.dapi_centres[:,1],
 									color = 'white', linestyle = '', 
 									marker = 'o', markersize = scale)
+			if (self.edges is not None) and self.show_mesh:
+				if self.edges.shape[0] > 0:
+					line_collection_edges = LineCollection(
+								self.dapi_centres[self.edges],
+									colors = 'white')
+					self.edges_plot = self.ax.add_collection(
+														line_collection_edges)
+			if self.edges_outer is not None:
+				if self.edges_outer.shape[0] > 0:
+					line_collection_outer = LineCollection(
+								self.dapi_centres[self.edges[self.edges_outer]],
+									colors = 'royalblue')
+					self.edges_outer_plot = self.ax.add_collection(
+														line_collection_outer)
+			if self.edges_outer_red is not None:
+				if self.edges_outer_red.shape[0] > 0:
+					line_collection_outer_red = LineCollection(
+						self.dapi_centres[self.edges[self.edges_outer_red]],
+									colors = 'crimson')
+					self.edges_outer_red_plot = self.ax.add_collection(
+												line_collection_outer_red)
+			if self.edges_outer_green is not None:
+				if self.edges_outer_green.shape[0] > 0:
+					line_collection_outer_green = LineCollection(
+						self.dapi_centres[self.edges[self.edges_outer_green]],
+									colors = 'seagreen')
+					self.edges_outer_green_plot = self.ax.add_collection(
+												line_collection_outer_green)
+			if (self.edges_outer_red is not None) and \
+			   (self.edges_outer_green is not None) :
+				if (self.edges_outer_red.shape[0] > 0) and \
+				   (self.edges_outer_green.shape[0] > 0):
+					line_collection_outer_purple = LineCollection(
+						self.dapi_centres[self.edges[self.edges_outer_red & \
+													 self.edges_outer_green]],
+									colors = 'seagreen')
+					self.edges_outer_purple_plot = self.ax.add_collection(
+												line_collection_outer_purple)
 			if self.red_cells is not None:
 				if self.red_cells.shape[0] > 0:
 					self.red_centres_plot = self.ax.plot(
 									self.dapi_centres[self.red_cells,0],
 									self.dapi_centres[self.red_cells,1],
 									color = 'crimson', linestyle = '', 
-									marker = '+', markersize = scale)
+									marker = '+', markersize = scale*1.3)
 			if self.green_cells is not None:
 				if self.green_cells.shape[0] > 0:
 					self.green_centres_plot = self.ax.plot(
@@ -212,22 +339,41 @@ class MPLCanvas(FigureCanvas):
 									color = 'seagreen', linestyle = '',
 									marker = 'x', markersize = scale)
 	
+	def remove_plot_element (self, plot_element):
+		if isinstance(plot_element,list):
+			for line in plot_element:
+				line.remove()
+		else:
+			plot_element.remove()
+	
 	def remove_centres (self):
 		if self.dapi_centres_plot is not None:
-			if isinstance(self.dapi_centres_plot,list):
-				for line in self.dapi_centres_plot:
-					line.remove()
+			self.remove_plot_element(self.dapi_centres_plot)
 			self.dapi_centres_plot = None
+		if self.edges_plot is not None:
+			self.remove_plot_element(self.edges_plot)
+			self.edges_plot = None
+		if self.edges_outer_plot is not None:
+			self.remove_plot_element(self.edges_outer_plot)
+			self.edges_outer_plot = None
+		if self.edges_outer_red_plot is not None:
+			self.remove_plot_element(self.edges_outer_red_plot)
+			self.edges_outer_red_plot = None
+		if self.edges_outer_green_plot is not None:
+			self.remove_plot_element(self.edges_outer_green_plot)
+			self.edges_outer_green_plot = None
+		if self.edges_outer_purple_plot is not None:
+			self.remove_plot_element(self.edges_outer_purple_plot)
+			self.edges_outer_purple_plot = None
 		if self.green_centres_plot is not None:
-			if isinstance(self.green_centres_plot,list):
-				for line in self.green_centres_plot:
-					line.remove()
+			self.remove_plot_element(self.green_centres_plot)
 			self.green_centres_plot = None
 		if self.red_centres_plot is not None:
-			if isinstance(self.red_centres_plot,list):
-				for line in self.red_centres_plot:
-					line.remove()
+			self.remove_plot_element(self.red_centres_plot)
 			self.red_centres_plot = None
+		if self.epi_centres_plot is not None:
+			self.remove_plot_element(self.epi_centres_plot)
+			self.epi_centres_plot = None
 	
 	def plot_selector (self, p_1, p_2):
 		self.remove_selector()
@@ -254,10 +400,12 @@ class Window(QWidget):
 		super().__init__()
 		self.green_active = True
 		self.red_active = True
+		self.geometry_active = True
 		self.green_cutoff_active = False
 		self.red_cutoff_active = False
 		self.threshold_defaults = np.array([180,2000,4095,4095,
-											180,2000,4095,4095])
+											320,2000,4095,4095,
+											50,40,10])
 		self.green_lower = self.threshold_defaults[0]
 		self.green_upper = self.threshold_defaults[1]
 		self.green_cutoff = self.threshold_defaults[2]
@@ -266,6 +414,10 @@ class Window(QWidget):
 		self.red_upper = self.threshold_defaults[5]
 		self.red_cutoff = self.threshold_defaults[6]
 		self.red_max = self.threshold_defaults[7]
+		self.geo_edge_max = self.threshold_defaults[8]
+		self.geo_distance = self.threshold_defaults[9]
+		self.geo_dist_red = self.threshold_defaults[10]
+		self.geo_size = int(512/8)
 		self.x_lower = 0
 		self.x_upper = 0
 		self.x_size = 512
@@ -289,7 +441,7 @@ class Window(QWidget):
 		self.click_id = 0
 		self.move_id = 0
 		self.position = np.array([0,0])
-		self.advanced_defaults = np.array([9,1,4,1,6,4])
+		self.advanced_defaults = np.array([9,1,4,2,6,4])
 		self.neighbourhood_size = self.advanced_defaults[0]
 		self.threshold_difference = self.advanced_defaults[1]
 		self.minimum_distance = self.advanced_defaults[2]
@@ -297,9 +449,16 @@ class Window(QWidget):
 		self.max_layer_distance = self.advanced_defaults[4]
 		self.number_layer_cell = self.advanced_defaults[5]
 		self.scale = np.array([0.232, 0.232, 0.479])
-		self.dapi_centres = np.zeros((0,2))
-		self.green_cells = np.zeros((0,1))
-		self.red_cells = np.zeros((0,1))
+		self.dapi_centres = np.zeros((0,2), dtype = float)
+		self.green_cells = np.zeros((0,1), dtype = bool)
+		self.red_cells = np.zeros((0,1), dtype = bool)
+		self.epi_cells = np.zeros((0,1), dtype = bool)
+		self.edges = np.zeros((0,2), dtype = int)
+		self.edges_outer = np.zeros((0,1), dtype = bool)
+		self.edges_outer_red = np.zeros((0,1), dtype = bool)
+		self.edges_outer_green = np.zeros((0,1), dtype = bool)
+		self.mesh = None
+		self.plot_mesh = False
 		self.plot_dapi = True
 		#
 		self.setupGUI()
@@ -342,8 +501,8 @@ class Window(QWidget):
 		z_select_layout.addWidget(self.slider_z)
 		options_layout.addLayout(z_select_layout)
 		tabs = QTabWidget()
-		tabs.setMinimumWidth(180)
-		tabs.setMaximumWidth(180)
+		tabs.setMinimumWidth(200)
+		tabs.setMaximumWidth(200)
 		# green channel options tab
 		tab_green = QWidget()
 		tab_green.layout = QVBoxLayout()
@@ -492,6 +651,76 @@ class Window(QWidget):
 		tab_red.layout.addLayout(threshold_layout_red)
 		tab_red.setLayout(tab_red.layout)
 		tabs.addTab(tab_red, 'red')
+		# geometry analysis options tab
+		tab_geo = QWidget()
+		tab_geo.layout = QVBoxLayout()
+		# checkbox to turn off geometry analysis
+		self.checkbox_geo = QCheckBox("geometry analysis")
+		self.checkbox_geo.setChecked(self.geometry_active)
+		self.checkbox_geo.stateChanged.connect(self.geo_checkbox)
+		tab_geo.layout.addWidget(self.checkbox_geo)
+		# sliders for geometry thresholds
+		threshold_layout_geo = QHBoxLayout()
+		# geometry max edge length
+		threshold_layout_geo_max = QVBoxLayout()
+		slider_layout_geo_max = QHBoxLayout()
+		self.slider_geo_max = QSlider(Qt.Vertical)
+		self.slider_geo_max.valueChanged.connect(self.threshold_geo_max)
+		slider_layout_geo_max.addWidget(self.slider_geo_max)
+		label_geo_max = QLabel('len_edge')
+		label_geo_max.setAlignment(Qt.AlignCenter)
+		self.textbox_geo_max = QLineEdit()
+		self.textbox_geo_max.setMaxLength(4)
+		self.textbox_geo_max.setFixedWidth(50)
+		self.textbox_geo_max.setValidator(QIntValidator())
+		self.textbox_geo_max.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_geo_max.addLayout(slider_layout_geo_max)
+		threshold_layout_geo_max.addWidget(label_geo_max)
+		threshold_layout_geo_max.addWidget(self.textbox_geo_max)
+		# geometry distance from outside
+		threshold_layout_geo_dist = QVBoxLayout()
+		slider_layout_geo_dist = QHBoxLayout()
+		self.slider_geo_dist = QSlider(Qt.Vertical)
+		self.slider_geo_dist.valueChanged.connect(self.threshold_geo_dist)
+		slider_layout_geo_dist.addWidget(self.slider_geo_dist)
+		label_geo_dist = QLabel('distance')
+		label_geo_dist.setAlignment(Qt.AlignCenter)
+		self.textbox_geo_dist = QLineEdit()
+		self.textbox_geo_dist.setMaxLength(4)
+		self.textbox_geo_dist.setFixedWidth(50)
+		self.textbox_geo_dist.setValidator(QIntValidator())
+		self.textbox_geo_dist.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_geo_dist.addLayout(slider_layout_geo_dist)
+		threshold_layout_geo_dist.addWidget(label_geo_dist)
+		threshold_layout_geo_dist.addWidget(self.textbox_geo_dist)
+		#
+		threshold_layout_geo_dist_red = QVBoxLayout()
+		slider_layout_geo_dist_red = QHBoxLayout()
+		self.slider_geo_dist_red = QSlider(Qt.Vertical)
+		self.slider_geo_dist_red.valueChanged.connect(
+												self.threshold_geo_dist_red)
+		slider_layout_geo_dist_red.addWidget(self.slider_geo_dist_red)
+		label_geo_dist_red = QLabel('dist_red')
+		label_geo_dist_red.setAlignment(Qt.AlignCenter)
+		self.textbox_geo_dist_red = QLineEdit()
+		self.textbox_geo_dist_red.setMaxLength(4)
+		self.textbox_geo_dist_red.setFixedWidth(50)
+		self.textbox_geo_dist_red.setValidator(QIntValidator())
+		self.textbox_geo_dist_red.editingFinished.connect(
+												self.threshold_textbox_select)
+		threshold_layout_geo_dist_red.addLayout(slider_layout_geo_dist_red)
+		threshold_layout_geo_dist_red.addWidget(label_geo_dist_red)
+		threshold_layout_geo_dist_red.addWidget(self.textbox_geo_dist_red)
+		#
+		threshold_layout_geo.addLayout(threshold_layout_geo_max)
+		threshold_layout_geo.addLayout(threshold_layout_geo_dist)
+		threshold_layout_geo.addLayout(threshold_layout_geo_dist_red)
+		tab_geo.layout.addLayout(threshold_layout_geo)
+		tab_geo.setLayout(tab_geo.layout)
+		tabs.addTab(tab_geo, 'geo')
+		#
 		self.setup_threshold_sliders()
 		self.setup_threshold_textboxes()
 		options_layout.addWidget(tabs)
@@ -588,7 +817,12 @@ class Window(QWidget):
 		self.checkbox_zoom.stateChanged.connect(self.zoom_checkbox)
 		zoom_layout.addWidget(self.checkbox_zoom)
 		#
-		self.checkbox_dapi = QCheckBox("plot dapi")
+		self.checkbox_mesh = QCheckBox("plot mesh")
+		self.checkbox_mesh.setChecked(self.plot_mesh)
+		self.checkbox_mesh.stateChanged.connect(self.mesh_checkbox)
+		zoom_layout.addWidget(self.checkbox_mesh)
+		#
+		self.checkbox_dapi = QCheckBox("3d dapi")
 		self.checkbox_dapi.setChecked(self.plot_dapi)
 		self.checkbox_dapi.stateChanged.connect(self.dapi_checkbox)
 		zoom_layout.addWidget(self.checkbox_dapi)
@@ -704,51 +938,6 @@ class Window(QWidget):
 		# Set the window's main layout
 		self.setLayout(outer_layout)
 	
-	def replot (self):
-		dapi_display = self.dapi_image
-		green_display = np.where(self.green_image > self.green_lower,
-							np.where(self.green_image < self.green_upper,
-										self.green_image, self.green_upper), 0)
-		red_display = np.where(self.red_image > self.red_lower,
-							np.where(self.red_image < self.red_upper,
-									self.red_image, self.red_upper), 0)
-		if self.zoomed:
-			self.canvas.update_images(
-						dapi_display[self.y_lower:self.y_upper,
-									 self.x_lower:self.x_upper],
-						green_display[self.y_lower:self.y_upper,
-									  self.x_lower:self.x_upper],
-						red_display[self.y_lower:self.y_upper,
-									self.x_lower:self.x_upper],
-						show_green = self.green_active,
-						show_red = self.red_active,
-						box = np.array([[self.x_lower,
-										 self.x_upper],
-										[self.y_lower,
-										 self.y_upper]]),
-						show_box = False
-					)
-			self.canvas.update_centres(self.dapi_centres,
-									   self.green_cells,
-									   self.red_cells)
-		else:
-			self.canvas.update_images(
-						dapi_display,
-						green_display,
-						red_display,
-						show_green = self.green_active,
-						show_red = self.red_active,
-						box = np.array([[self.x_lower,
-										 self.x_upper],
-										[self.y_lower,
-										 self.y_upper]]),
-						show_box = True
-					)
-			self.canvas.update_centres(self.dapi_centres + \
-								np.array([self.x_lower,self.y_lower]),
-									   self.green_cells,
-									   self.red_cells)
-	
 	def setup_z_slider (self):
 		self.slider_z.setMinimum(0)
 		self.slider_z.setMaximum(self.z_size-1)
@@ -780,6 +969,18 @@ class Window(QWidget):
 		self.slider_red_cut.setMaximum(self.red_max)
 		self.slider_red_cut.setSingleStep(1)
 		self.slider_red_cut.setValue(self.red_cutoff)
+		self.slider_geo_max.setMinimum(0)
+		self.slider_geo_max.setMaximum(self.geo_size)
+		self.slider_geo_max.setSingleStep(1)
+		self.slider_geo_max.setValue(self.geo_edge_max)
+		self.slider_geo_dist.setMinimum(0)
+		self.slider_geo_dist.setMaximum(self.geo_size)
+		self.slider_geo_dist.setSingleStep(1)
+		self.slider_geo_dist.setValue(self.geo_distance)
+		self.slider_geo_dist_red.setMinimum(0)
+		self.slider_geo_dist_red.setMaximum(self.geo_size)
+		self.slider_geo_dist_red.setSingleStep(1)
+		self.slider_geo_dist_red.setValue(self.geo_dist_red)
 	
 	def setup_bound_textboxes (self):
 		self.textbox_x_min.setText(str(self.x_lower))
@@ -800,8 +1001,13 @@ class Window(QWidget):
 	def setup_threshold_textboxes (self):
 		self.textbox_green_min.setText(str(self.green_lower))
 		self.textbox_green_max.setText(str(self.green_upper))
+		self.textbox_green_cut.setText(str(self.green_cutoff))
 		self.textbox_red_min.setText(str(self.red_lower))
 		self.textbox_red_max.setText(str(self.red_upper))
+		self.textbox_red_cut.setText(str(self.red_cutoff))
+		self.textbox_geo_max.setText(str(self.geo_edge_max))
+		self.textbox_geo_dist.setText(str(self.geo_distance))
+		self.textbox_geo_dist_red.setText(str(self.geo_dist_red))
 	
 	def z_min_button (self):
 		self.z_lower = self.z_level
@@ -857,12 +1063,31 @@ class Window(QWidget):
 		self.textbox_red_cut.setText(str(self.red_cutoff))
 		self.replot()
 	
+	def threshold_geo_max (self):
+		self.geo_edge_max = self.slider_geo_max.value()
+		self.textbox_geo_max.setText(str(self.geo_edge_max))
+		self.replot()
+	
+	def threshold_geo_dist (self):
+		self.geo_distance = self.slider_geo_dist.value()
+		self.textbox_geo_dist.setText(str(self.geo_distance))
+		self.replot()
+	
+	def threshold_geo_dist_red (self):
+		self.geo_dist_red = self.slider_geo_dist_red.value()
+		self.textbox_geo_dist_red.setText(str(self.geo_dist_red))
+		self.replot()
+	
 	def green_checkbox (self):
 		self.green_active = self.checkbox_green.isChecked()
 		self.replot()
 	
 	def red_checkbox (self):
 		self.red_active = self.checkbox_red.isChecked()
+		self.replot()
+	
+	def geo_checkbox (self):
+		self.geo_active = self.checkbox_geo.isChecked()
 		self.replot()
 	
 	def green_cutoff_checkbox (self):
@@ -879,6 +1104,10 @@ class Window(QWidget):
 	
 	def dapi_checkbox (self):
 		self.plot_dapi = self.checkbox_dapi.isChecked()
+		self.replot()
+	
+	def mesh_checkbox (self):
+		self.plot_mesh = self.checkbox_mesh.isChecked()
 		self.replot()
 	
 	def bound_textbox_select (self):
@@ -913,21 +1142,48 @@ class Window(QWidget):
 		self.green_lower = int(self.textbox_green_min.text())
 		if self.green_lower < 0:
 			self.green_lower = 0
+		elif self.green_lower > self.green_max:
+			self.green_lower = self.green_max
 		self.green_upper = int(self.textbox_green_max.text())
-		if self.green_upper > self.green_max:
+		if self.green_upper < 0:
+			self.green_upper = 0
+		elif self.green_upper > self.green_max:
 			self.green_upper = self.green_max
 		self.green_cutoff = int(self.textbox_green_cut.text())
-		if self.green_cutoff > self.green_max:
+		if self.green_cutoff < 0:
+			self.green_cutoff = 0
+		elif self.green_cutoff > self.green_max:
 			self.green_cutoff = self.green_max
 		self.red_lower = int(self.textbox_red_min.text())
 		if self.red_lower < 0:
 			self.red_lower = 0
+		elif self.red_lower > self.red_max:
+			self.red_lower = self.red_max
 		self.red_upper = int(self.textbox_red_max.text())
-		if self.red_upper > self.red_max:
+		if self.red_upper < 0:
+			self.red_upper = 0
+		elif self.red_upper > self.red_max:
 			self.red_upper = self.red_max
 		self.red_cutoff = int(self.textbox_red_cut.text())
-		if self.red_cutoff > self.red_max:
+		if self.red_cutoff < 0:
+			self.red_cutoff = 0
+		elif self.red_cutoff > self.red_max:
 			self.red_cutoff = self.red_max
+		self.geo_edge_max = int(self.textbox_geo_max.text())
+		if self.geo_edge_max < 0:
+			self.geo_edge_max = 0
+		elif self.geo_edge_max > self.geo_size:
+			self.geo_edge_max = self.geo_size
+		self.geo_distance = int(self.textbox_geo_dist.text())
+		if self.geo_distance < 0:
+			self.geo_distance = 0
+		elif self.geo_distance > self.geo_size:
+			self.geo_distance = self.geo_size
+		self.geo_dist_red = int(self.textbox_geo_dist_red.text())
+		if self.geo_dist_red < 0:
+			self.geo_dist_red = 0
+		elif self.geo_dist_red > self.geo_size:
+			self.geo_dist_red = self.geo_size
 		self.setup_threshold_textboxes()
 		self.setup_threshold_sliders()
 	
@@ -953,6 +1209,9 @@ class Window(QWidget):
 		self.red_lower = self.threshold_defaults[4]
 		self.red_upper = self.threshold_defaults[5]
 		self.red_cutoff = self.threshold_defaults[6]
+		self.geo_edge_max = self.threshold_defaults[8]
+		self.geo_distance = self.threshold_defaults[9]
+		self.geo_dist_red = self.threshold_defaults[10]
 		self.setup_threshold_textboxes()
 		self.setup_threshold_sliders()
 		self.checkbox_green_cutoff.setChecked(False)
@@ -964,9 +1223,7 @@ class Window(QWidget):
 		self.zoomed = False
 		self.checkbox_zoom.setChecked(False)
 		self.replot()
-		self.dapi_centres = np.zeros((0,2))
-		self.green_cells = np.zeros((0))
-		self.red_cells = np.zeros((0))
+		self.clear_centres()
 		self.selecting_area = True
 		self.click_id = self.canvas.mpl_connect(
 							'button_press_event', self.on_click)
@@ -1010,7 +1267,75 @@ class Window(QWidget):
 		self.y_lower = 0
 		self.y_upper = self.y_size
 		self.setup_bound_textboxes()
+		self.clear_centres()
 		self.replot()
+	
+	def clear_centres (self):
+		self.dapi_centres = np.zeros((0,2), dtype = float)
+		self.green_cells = np.zeros((0,1), dtype = bool)
+		self.red_cells = np.zeros((0,1), dtype = bool)
+		self.epi_cells = np.zeros((0,1), dtype = bool)
+		self.edges = np.zeros((0,2), dtype = int)
+		self.edges_outer = np.zeros((0,1), dtype = bool)
+		self.edges_outer_red = np.zeros((0,1), dtype = bool)
+		self.edges_outer_green = np.zeros((0,1), dtype = bool)
+	
+	def replot (self):
+		dapi_display = self.dapi_image
+		green_display = np.where(self.green_image > self.green_lower,
+							np.where(self.green_image < self.green_upper,
+										self.green_image, self.green_upper), 0)
+		red_display = np.where(self.red_image > self.red_lower,
+							np.where(self.red_image < self.red_upper,
+									self.red_image, self.red_upper), 0)
+		if self.zoomed:
+			self.canvas.update_images(
+						dapi_display[self.y_lower:self.y_upper,
+									 self.x_lower:self.x_upper],
+						green_display[self.y_lower:self.y_upper,
+									  self.x_lower:self.x_upper],
+						red_display[self.y_lower:self.y_upper,
+									self.x_lower:self.x_upper],
+						show_green = self.green_active,
+						show_red = self.red_active,
+						box = np.array([[self.x_lower,
+										 self.x_upper],
+										[self.y_lower,
+										 self.y_upper]]),
+						show_box = False,
+						show_mesh = self.plot_mesh
+					)
+			self.canvas.update_centres(self.dapi_centres,
+									   self.green_cells,
+									   self.red_cells,
+									   self.epi_cells,
+									   self.edges,
+									   self.edges_outer,
+									   self.edges_outer_red,
+									   self.edges_outer_green)
+		else:
+			self.canvas.update_images(
+						dapi_display,
+						green_display,
+						red_display,
+						show_green = self.green_active,
+						show_red = self.red_active,
+						box = np.array([[self.x_lower,
+										 self.x_upper],
+										[self.y_lower,
+										 self.y_upper]]),
+						show_box = True,
+						show_mesh = self.plot_mesh
+					)
+			self.canvas.update_centres(self.dapi_centres + \
+								np.array([self.x_lower,self.y_lower]),
+									   self.green_cells,
+									   self.red_cells,
+									   self.epi_cells,
+									   self.edges,
+									   self.edges_outer,
+									   self.edges_outer_red,
+									   self.edges_outer_green)
 	
 	def open_nd2 (self):
 		options = QFileDialog.Options()
@@ -1029,6 +1354,7 @@ class Window(QWidget):
 			self.x_size = self.image_stack.sizes['x']
 			self.y_size = self.image_stack.sizes['y']
 			self.z_size = self.image_stack.sizes['z']
+			self.geo_size = int(min(self.x_size,self.y_size)/8)
 			self.x_lower = 0
 			self.x_upper = self.x_size-1
 			self.y_lower = 0
@@ -1052,7 +1378,7 @@ class Window(QWidget):
 		self.dapi_image, self. green_image, self.red_image = \
 											self.extract_image(self.z_level)
 		self.setup_z_slider()
-	#	self.setup_threshold_sliders()
+		self.setup_threshold_sliders()
 		self.replot()
 	
 	def preview (self):
@@ -1069,6 +1395,50 @@ class Window(QWidget):
 		self.dapi_centres, self.green_cells, self.red_cells = \
 					self.process_image(self.dapi_image,
 										green_image, red_image)
+		triangulation = Delaunay(self.dapi_centres)
+		self.mesh = SimplicialComplex(triangulation.points,
+									  triangulation.simplices,
+									  triangulation.neighbors)
+		self.mesh.remove_long_simplices(self.geo_edge_max)
+		self.edges, count = np.unique(np.sort(
+									np.vstack([self.mesh.simplices[:,:2],
+											   self.mesh.simplices[:,1:],
+											   self.mesh.simplices[:,::2]]),
+								axis=1), return_counts = True, axis=0)
+		self.edges_outer = (count == 1)  & \
+				(self.dapi_centres[self.edges[:,0],0] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],0] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,0],1] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],1] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,0],0] < \
+					self.x_upper - self.x_lower - self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],0] < \
+					self.x_upper - self.x_lower - self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,0],1] < \
+					self.y_upper - self.y_lower - self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],1] < \
+					self.y_upper - self.y_lower - self.geo_edge_max/3)
+		self.edges_outer_red = self.edges_outer.copy()
+		outer_edges = self.edges[self.edges_outer]
+		points_inner = np.ones(self.dapi_centres.shape[0], dtype = bool)
+		points_inner[np.unique(outer_edges)] = False
+		self.edges_outer_red[self.edges_outer] = \
+					self.red_cells[outer_edges[:,0]] & \
+					self.red_cells[outer_edges[:,1]]
+		distances = np.zeros((self.dapi_centres.shape[0], outer_edges.shape[0]),
+								dtype = float)
+		for index, edge in enumerate(outer_edges):
+			distances[points_inner,index] = lineseg_dists(
+										self.dapi_centres[points_inner],
+										self.dapi_centres[edge[0]],
+										self.dapi_centres[edge[1]])
+		min_indices = np.argmin(distances, axis=1)
+		closest_is_red = self.edges_outer_red[self.edges_outer][min_indices]
+		min_distance = np.min(distances, axis=1)
+		self.epi_cells = ((min_distance < self.geo_dist_red) & \
+													closest_is_red) | \
+						 ((min_distance < self.geo_distance) & \
+											np.logical_not(closest_is_red))
 		self.replot()
 	
 	def execute (self):
@@ -1080,6 +1450,8 @@ class Window(QWidget):
 		green_cells_layer = np.zeros(0, dtype = bool)
 		red_cells_layer = np.zeros(0, dtype = bool)
 		self.progress_bar.setRange(self.z_lower, self.z_upper)
+		self.progress_bar.setValue(self.z_lower)
+		self.progress_bar.setFormat('Processing Z-Stack: %p%')
 		for z_level in range(self.z_lower, self.z_upper+1):
 			dapi_image, green_image, red_image = self.extract_image(z_level)
 			if not self.green_active:
@@ -1099,6 +1471,8 @@ class Window(QWidget):
 		self.progress_bar.setMinimum(0)
 		positions_layer_size = positions_layer.shape[0]
 		self.progress_bar.setMaximum(positions_layer.shape[0])
+		self.progress_bar.setValue(0)
+		self.progress_bar.setFormat('Correlating Layers: %p%')
 		positions = np.zeros((0,3), dtype = float)
 		green_cells = np.zeros(0, dtype = bool)
 		red_cells = np.zeros(0, dtype = bool)
@@ -1155,15 +1529,131 @@ class Window(QWidget):
 			positions_layer = np.delete(positions_layer, 0, axis=0)
 			green_cells_layer = np.delete(green_cells_layer,0)
 			red_cells_layer = np.delete(red_cells_layer,0)
-			self.progress_bar.setValue(positions_layer_size - \
-									   positions_layer.shape[0])
+			layers_processed = positions_layer_size - positions_layer.shape[0]
+			self.progress_bar.setValue(layers_processed)
 		positions = positions * self.scale
-		self.save_csv(positions, green_cells, red_cells)
-		self.plot_3d(positions, green_cells, red_cells)
+		epi_cells = np.zeros(len(red_cells), dtype = bool)
+		self.progress_bar.reset()
+		if self.geometry_active:
+			self.progress_bar.setMinimum(0)
+			self.progress_bar.setMaximum(positions.shape[0])
+			self.progress_bar.setValue(0)
+			self.progress_bar.setFormat('Finding Epithelial Cells: %p%')
+			triangulation = Delaunay(positions)
+			mesh_3d = SimplicialComplex(triangulation.points,
+										triangulation.simplices,
+										triangulation.neighbors)
+			mesh_3d.remove_long_simplices(self.geo_edge_max)
+			faces_all, count = np.unique(np.sort(
+								np.vstack([mesh_3d.simplices[:,(0,1,2)],
+										   mesh_3d.simplices[:,(0,1,3)],
+										   mesh_3d.simplices[:,(0,2,3)],
+										   mesh_3d.simplices[:,(1,2,3)]]),
+								axis=1), return_counts = True, axis=0)
+			faces_outer = faces_all[count == 1]
+			outer_points_indices = np.unique(faces_outer)
+			points = positions[outer_points_indices]
+			outer_points_dict = np.zeros(positions.shape[0], dtype = int)
+			outer_points_dict[outer_points_indices] = np.arange(
+													len(outer_points_indices))
+			faces = outer_points_dict[faces_outer]
+			points_red = red_cells[outer_points_indices]
+			faces_red = (points_red[faces[:,0]] & points_red[faces[:,1]]) | \
+						(points_red[faces[:,0]] & points_red[faces[:,2]]) | \
+						(points_red[faces[:,1]] & points_red[faces[:,2]])
+			points_green = green_cells[outer_points_indices]
+			faces_green = (points_green[faces[:,0]] & \
+								points_green[faces[:,1]]) | \
+						  (points_green[faces[:,0]] & \
+								points_green[faces[:,2]]) | \
+						  (points_green[faces[:,1]] & \
+								points_green[faces[:,2]])
+			faces_purple = faces_red & faces_green
+			surface_mesh = Trimesh(vertices = points, faces = faces)
+			fix_normals(surface_mesh)
+			mask = (((points[faces[:,0],0] < (self.x_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],0] < (self.x_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],0] < (self.x_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7)) | \
+					((points[faces[:,0],1] < (self.y_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],1] < (self.y_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],1] < (self.y_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7)) | \
+					((points[faces[:,0],2] < (self.z_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],2] < (self.z_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],2] < (self.z_lower + \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7)) | \
+					((points[faces[:,0],0] > (self.x_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],0] > (self.x_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],0] > (self.x_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7)) | \
+					((points[faces[:,0],1] > (self.y_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],1] > (self.y_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],1] > (self.y_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7)) | \
+					((points[faces[:,0],2] > (self.z_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,1],2] > (self.z_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (points[faces[:,2],2] > (self.z_upper - \
+									self.geo_edge_max/3) * self.scale[0]) & \
+					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7)))
+			surface_mesh.update_faces(np.logical_not(mask))
+			fix_normals(surface_mesh)
+			mask = np.zeros(len(surface_mesh.faces), dtype = bool)
+			cc = connected_components(surface_mesh.face_adjacency, min_len=4)
+			mask[np.concatenate(cc)] = True
+			surface_mesh.update_faces(mask)
+			#surface_mesh.show()
+			#closest_points, distances, triangle_ids = \
+			#		surface_mesh.nearest.on_surface(positions)
+			for index, point in enumerate(positions):
+				closest_point, distance, triangle_id = \
+						surface_mesh.nearest.on_surface([point])
+				epi_cells[index] = ((distance[0] < self.geo_dist_red * \
+													self.scale[0]) and \
+												faces_red[triangle_id[0]]) | \
+								   ((distance[0] < self.geo_distance * \
+													self.scale[0]) and \
+											not faces_red[triangle_id[0]])
+				self.progress_bar.setValue(index)
+			###############################################################
+			#face_colors = np.ones((faces.shape[0],  4), dtype = int)*150
+			#face_colors[:,3] = 255
+			#face_colors[faces_red] = [[200,0,0,255]]
+			#face_colors[faces_green] = [[0,200,0,255]]
+			#face_colors[faces_purple] = [[120,0,120,255]]
+			#surface_mesh.visual.face_colors = face_colors
+			#surface_mesh.show(smooth=False)
+			###############################################################
+			self.progress_bar.reset()
+			#
+		self.progress_bar.setMinimum(0)
+		self.progress_bar.setFormat('')
+		self.progress_bar.setMaximum(1)
+		self.progress_bar.setValue(0)
+		self.save_csv(positions, green_cells, red_cells, epi_cells)
+		self.plot_3d(positions, green_cells, red_cells, epi_cells)
 	
-	def save_csv (self, positions, green_cells, red_cells):
-		output_array = np.vstack([positions.T, green_cells, red_cells]).T
-		data_format = '%.18e', '%.18e', '%.18e', '%1d', '%1d'
+	def save_csv (self, positions, green_cells, red_cells, epi_cells):
+		output_array = np.vstack([positions.T, green_cells, red_cells,
+									epi_cells]).T
+		data_format = '%.18e', '%.18e', '%.18e', '%1d', '%1d', '%1d'
 		np.savetxt(self.nd2_file.with_suffix(
 				'.{0:s}.csv'.format(time.strftime("%Y.%m.%d-%H.%M.%S"))),
 				output_array, fmt = data_format, delimiter = ',')
@@ -1183,11 +1673,13 @@ class Window(QWidget):
 		try:
 			data_format = np.dtype([ ('positions', float, 3),
 									 ('green_cells', bool),
-									 ('red_cells', bool) ])
+									 ('red_cells', bool),
+									 ('epi_cells', bool) ])
 			input_data = np.loadtxt(str(csv_file), dtype = data_format,
 									delimiter=',').view(np.recarray)
 			self.plot_3d(input_data.positions, input_data.green_cells,
-											   input_data.red_cells)
+											   input_data.red_cells,
+											   input_data.epi_cells)
 		except:
 			msg = QMessageBox()
 			msg.setIcon(QMessageBox.Critical)
@@ -1275,17 +1767,17 @@ class Window(QWidget):
 		frame = image[self.y_lower:self.y_upper,
 					  self.x_lower:self.x_upper]
 		frame = mh.gaussian_filter(frame, self.gauss_deviation)
-		frame_max = filters.maximum_filter(frame, self.neighbourhood_size)
+		frame_max = ndi.maximum_filter(frame, self.neighbourhood_size)
 		maxima = (frame == frame_max)
-		frame_min = filters.minimum_filter(frame, self.neighbourhood_size)
+		frame_min = ndi.minimum_filter(frame, self.neighbourhood_size)
 		differences = ((frame_max - frame_min) > self.threshold_difference)
 		maxima[differences == 0] = 0
 		maximum = np.amax(frame)
 		minimum = np.amin(frame)
 		outside_filter = (frame_max > (maximum-minimum)*0.1 + minimum)
 		maxima[outside_filter == 0] = 0
-		labeled, num_objects = ndimage.label(maxima)
-		slices = ndimage.find_objects(labeled)
+		labeled, num_objects = ndi.label(maxima)
+		slices = ndi.find_objects(labeled)
 		centres = np.zeros((len(slices),2), dtype = int)
 		good_centres = 0
 		for (dy,dx) in slices:
@@ -1302,12 +1794,20 @@ class Window(QWidget):
 		centres = centres[:good_centres]
 		return centres
 	
-	def plot_3d (self, positions, green_cells, red_cells):
+	def plot_3d (self, positions, green_cells, red_cells, epi_cells):
 		fig = plt.figure(figsize=(10,10))
 		ax = fig.add_subplot(111, projection='3d')
+		scale = 4
+		if epi_cells is not None:
+			if epi_cells.shape[0] > 0:
+				ax.plot(positions[epi_cells,0], positions[epi_cells,1],
+						positions[epi_cells,2],
+						linestyle = '', marker = '.',
+						markersize = 2.5*scale, color = 'royalblue')
 		if self.plot_dapi:
 			ax.plot(positions[:,0], positions[:,1], positions[:,2],
-					linestyle = '', marker = '.', color = 'gray')
+					linestyle = '', marker = '.',
+					markersize = scale, color = 'gray')
 		if self.red_active and self.green_active:
 			ax.plot(positions[np.logical_and(red_cells,
 								np.logical_not(green_cells)),0],
@@ -1315,18 +1815,21 @@ class Window(QWidget):
 								np.logical_not(green_cells)),1],
 					positions[np.logical_and(red_cells,
 								np.logical_not(green_cells)),2],
-					linestyle = '', marker = '+', color = 'red')
+					linestyle = '', marker = '+',
+					markersize = 1.3*scale, color = 'crimson')
 			ax.plot(positions[np.logical_and(red_cells, green_cells),0],
 					positions[np.logical_and(red_cells, green_cells),1],
 					positions[np.logical_and(red_cells, green_cells),2],
-					linestyle = '', marker = '+', color = 'purple')
+					linestyle = '', marker = '+',
+					markersize = 1.3*scale, color = 'purple')
 			ax.plot(positions[np.logical_and(green_cells,
 								np.logical_not(red_cells)),0],
 					positions[np.logical_and(green_cells,
 								np.logical_not(red_cells)),1],
 					positions[np.logical_and(green_cells,
 								np.logical_not(red_cells)),2],
-						linestyle = '', marker = 'x', color = 'green')
+						linestyle = '', marker = 'x',
+					markersize = scale, color = 'seagreen')
 		elif self.red_active:
 				ax.plot(positions[red_cells,0], positions[red_cells,1],
 								positions[red_cells,2],
@@ -1334,7 +1837,7 @@ class Window(QWidget):
 		elif self.green_active:
 				ax.plot(positions[green_cells,0], positions[green_cells,1],
 								positions[green_cells,2],
-						linestyle = '', marker = 'x', color = 'green')
+						linestyle = '', marker = 'x', color = 'seagreen')
 		ax.set_xlim([ np.amin(positions[:,0]), np.amax(positions[:,0]) ])
 		ax.set_ylim([ np.amin(positions[:,1]), np.amax(positions[:,1]) ])
 		ax.set_zlim([ np.amin(positions[:,2]), np.amax(positions[:,2]) ])
@@ -1344,8 +1847,13 @@ class Window(QWidget):
 						   np.amax(positions[:,2]) - np.amin(positions[:,2])))
 		plt.show()
 
+################################################################################
+
 if __name__ == "__main__":
 	app = QApplication(sys.argv)
 	window = Window()
 	window.show()
 	sys.exit(app.exec_())
+
+################################################################################
+# EOF
