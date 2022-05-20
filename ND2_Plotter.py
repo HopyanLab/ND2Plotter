@@ -280,7 +280,7 @@ class MPLCanvas(FigureCanvas):
 									self.dapi_centres[self.epi_cells,0],
 									self.dapi_centres[self.epi_cells,1],
 									color = 'royalblue', linestyle = '', 
-									marker = 'o', markersize = scale*1.9)
+									marker = 'o', markersize = scale*1.7)
 			self.dapi_centres_plot = self.ax.plot(
 									self.dapi_centres[:,0],
 									self.dapi_centres[:,1],
@@ -719,7 +719,7 @@ class Window(QWidget):
 		threshold_layout_geo.addLayout(threshold_layout_geo_dist_red)
 		tab_geo.layout.addLayout(threshold_layout_geo)
 		tab_geo.setLayout(tab_geo.layout)
-		tabs.addTab(tab_geo, 'geo')
+		tabs.addTab(tab_geo, 'geometry')
 		#
 		self.setup_threshold_sliders()
 		self.setup_threshold_textboxes()
@@ -1800,10 +1800,17 @@ class Window(QWidget):
 		scale = 4
 		if epi_cells is not None:
 			if epi_cells.shape[0] > 0:
-				ax.plot(positions[epi_cells,0], positions[epi_cells,1],
+				ax.plot(positions[epi_cells,0],
+						positions[epi_cells,1],
 						positions[epi_cells,2],
 						linestyle = '', marker = '.',
 						markersize = 2.5*scale, color = 'royalblue')
+			if epi_cells.shape[0] > 0 and self.green_active:
+				ax.plot(positions[np.logical_not(epi_cells) & green_cells,0],
+						positions[np.logical_not(epi_cells) & green_cells,1],
+						positions[np.logical_not(epi_cells) & green_cells,2],
+						linestyle = '', marker = '.',
+						markersize = 2.5*scale, color = 'gold')
 		if self.plot_dapi:
 			ax.plot(positions[:,0], positions[:,1], positions[:,2],
 					linestyle = '', marker = '.',
