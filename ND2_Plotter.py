@@ -1656,7 +1656,8 @@ class Window(QWidget):
 		data_format = '%.18e', '%.18e', '%.18e', '%1d', '%1d', '%1d'
 		np.savetxt(self.nd2_file.with_suffix(
 				'.{0:s}.csv'.format(time.strftime("%Y.%m.%d-%H.%M.%S"))),
-				output_array, fmt = data_format, delimiter = ',')
+				output_array, fmt = data_format, delimiter = ',',
+				header = 'X,Y,Z,Is_Green,Is_Red,Is_Epithellial')
 	
 	def open_csv (self):
 		options = QFileDialog.Options()
