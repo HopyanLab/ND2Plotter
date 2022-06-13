@@ -459,7 +459,7 @@ class Window(QWidget):
 		self.edges_outer_green = np.zeros((0,1), dtype = bool)
 		self.mesh = None
 		self.plot_mesh = False
-		self.plot_dapi = True
+		self.plot_dapi = False
 		#
 		self.setupGUI()
 	
@@ -501,8 +501,8 @@ class Window(QWidget):
 		z_select_layout.addWidget(self.slider_z)
 		options_layout.addLayout(z_select_layout)
 		tabs = QTabWidget()
-		tabs.setMinimumWidth(200)
-		tabs.setMaximumWidth(200)
+		tabs.setMinimumWidth(220)
+		tabs.setMaximumWidth(220)
 		# green channel options tab
 		tab_green = QWidget()
 		tab_green.layout = QVBoxLayout()
@@ -1570,6 +1570,8 @@ class Window(QWidget):
 								points_green[faces[:,2]])
 			faces_purple = faces_red & faces_green
 			surface_mesh = Trimesh(vertices = points, faces = faces)
+			surface_mesh.export(self.nd2_file.with_suffix(
+					'.{0:s}.stl'.format(time.strftime("%Y.%m.%d-%H.%M.%S"))))
 			fix_normals(surface_mesh)
 			mask = (((points[faces[:,0],0] < (self.x_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
@@ -1800,52 +1802,68 @@ class Window(QWidget):
 		ax = fig.add_subplot(111, projection='3d')
 		scale = 4
 		if epi_cells is not None:
-			if epi_cells.shape[0] > 0:
+			if epi_cells.shape[0] > 0 and not self.green_active:
 				ax.plot(positions[epi_cells,0],
 						positions[epi_cells,1],
 						positions[epi_cells,2],
 						linestyle = '', marker = '.',
-						markersize = 2.5*scale, color = 'royalblue')
+						markersize = 1.5*scale, color = 'royalblue')
 			if epi_cells.shape[0] > 0 and self.green_active:
+				ax.plot(positions[epi_cells & np.logical_not(green_cells),0],
+						positions[epi_cells & np.logical_not(green_cells),1],
+						positions[epi_cells & np.logical_not(green_cells),2],
+						linestyle = '', marker = '.',
+						markersize = 2.0*scale, color = 'royalblue',
+						alpha = 0.5)
+				ax.plot(positions[epi_cells & green_cells,0],
+						positions[epi_cells & green_cells,1],
+						positions[epi_cells & green_cells,2],
+						linestyle = '', marker = '.',
+						markersize = 2.0*scale, color = 'purple',
+						alpha = 0.5)
 				ax.plot(positions[np.logical_not(epi_cells) & green_cells,0],
 						positions[np.logical_not(epi_cells) & green_cells,1],
 						positions[np.logical_not(epi_cells) & green_cells,2],
 						linestyle = '', marker = '.',
-						markersize = 2.5*scale, color = 'gold')
+						markersize = 2.0*scale, color = 'gold',
+						alpha = 0.5)
 		if self.plot_dapi:
 			ax.plot(positions[:,0], positions[:,1], positions[:,2],
 					linestyle = '', marker = '.',
-					markersize = scale, color = 'gray')
-		if self.red_active and self.green_active:
-			ax.plot(positions[np.logical_and(red_cells,
-								np.logical_not(green_cells)),0],
-					positions[np.logical_and(red_cells,
-								np.logical_not(green_cells)),1],
-					positions[np.logical_and(red_cells,
-								np.logical_not(green_cells)),2],
-					linestyle = '', marker = '+',
-					markersize = 1.3*scale, color = 'crimson')
-			ax.plot(positions[np.logical_and(red_cells, green_cells),0],
-					positions[np.logical_and(red_cells, green_cells),1],
-					positions[np.logical_and(red_cells, green_cells),2],
-					linestyle = '', marker = '+',
-					markersize = 1.3*scale, color = 'purple')
-			ax.plot(positions[np.logical_and(green_cells,
-								np.logical_not(red_cells)),0],
-					positions[np.logical_and(green_cells,
-								np.logical_not(red_cells)),1],
-					positions[np.logical_and(green_cells,
-								np.logical_not(red_cells)),2],
-						linestyle = '', marker = 'x',
-					markersize = scale, color = 'seagreen')
-		elif self.red_active:
+					markersize = 0.8*scale, color = 'gray',
+					alpha = 0.2)
+		#if self.red_active and self.green_active:
+		#	ax.plot(positions[np.logical_and(red_cells,
+		#						np.logical_not(green_cells)),0],
+		#			positions[np.logical_and(red_cells,
+		#						np.logical_not(green_cells)),1],
+		#			positions[np.logical_and(red_cells,
+		#						np.logical_not(green_cells)),2],
+		#			linestyle = '', marker = '+',
+		#			markersize = 1.0*scale, color = 'crimson')
+		#	ax.plot(positions[np.logical_and(red_cells, green_cells),0],
+		#			positions[np.logical_and(red_cells, green_cells),1],
+		#			positions[np.logical_and(red_cells, green_cells),2],
+		#			linestyle = '', marker = '+',
+		#			markersize = 1.0*scale, color = 'purple')
+		#	ax.plot(positions[np.logical_and(green_cells,
+		#						np.logical_not(red_cells)),0],
+		#			positions[np.logical_and(green_cells,
+		#						np.logical_not(red_cells)),1],
+		#			positions[np.logical_and(green_cells,
+		#						np.logical_not(red_cells)),2],
+		#				linestyle = '', marker = 'x',
+		#			markersize = 0.8*scale, color = 'seagreen')
+		if self.red_active and self.plot_dapi:
 				ax.plot(positions[red_cells,0], positions[red_cells,1],
 								positions[red_cells,2],
-						linestyle = '', marker = '+', color = 'red')
-		elif self.green_active:
+						linestyle = '', marker = '+',
+					markersize = 0.9*scale, color = 'red')
+		if self.green_active and self.plot_dapi:
 				ax.plot(positions[green_cells,0], positions[green_cells,1],
 								positions[green_cells,2],
-						linestyle = '', marker = 'x', color = 'seagreen')
+						linestyle = '', marker = 'x',
+					markersize = 0.7*scale, color = 'seagreen')
 		ax.set_xlim([ np.amin(positions[:,0]), np.amax(positions[:,0]) ])
 		ax.set_ylim([ np.amin(positions[:,1]), np.amax(positions[:,1]) ])
 		ax.set_zlim([ np.amin(positions[:,2]), np.amax(positions[:,2]) ])
