@@ -433,6 +433,7 @@ class Window(QWidget):
 		self.green_image = np.zeros((512,512),dtype=int)
 		self.red_image = np.zeros((512,512),dtype=int)
 		self.nd2_file = None
+		self.czi_file = None
 		self.image_stack = None
 		self.title = "ND2 Nuclear Positions Tool"
 		self.canvas = MPLCanvas()
@@ -1337,6 +1338,33 @@ class Window(QWidget):
 									   self.edges_outer_red,
 									   self.edges_outer_green)
 	
+	def open_file (self):
+		options = QFileDialog.Options()
+		options |= QFileDialog.DontUseNativeDialog
+		file_name, _ = QFileDialog.getOpenFileName(self,
+								'Open Microscope File',
+								'',
+								'ND2 Files (*.nd2);;' + \
+								'CZI Files (*.czi);;' + \
+								'All Files (*)',
+								options=options)
+		if file_name == '':
+			return False
+		else:
+			file_path = Path(file_name)
+			if file_path.suffix.lower() == '.nd2':
+				self.nd2_file = file_path
+				self.czi_file = None
+				return True
+			elif file_path.suffix.lower() == '.czi':
+				self.nd2_file = None
+				self.czi_file = file_path
+				return True
+			else:
+				self.nd2_file = None
+				self.czi_file = None
+				return False
+	
 	def open_nd2 (self):
 		options = QFileDialog.Options()
 		options |= QFileDialog.DontUseNativeDialog
@@ -1405,15 +1433,23 @@ class Window(QWidget):
 											   self.mesh.simplices[:,1:],
 											   self.mesh.simplices[:,::2]]),
 								axis=1), return_counts = True, axis=0)
-		self.edges_outer = (count == 1)  & \
+		self.edges_outer = (count == 1)
+		if self.x_lower > 0:
+			self.edges_outer = self.edges_outer & \
 				(self.dapi_centres[self.edges[:,0],0] > self.geo_edge_max/3) & \
-				(self.dapi_centres[self.edges[:,1],0] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],0] > self.geo_edge_max/3)
+		if self.y_lower > 0:
+			self.edges_outer = self.edges_outer & \
 				(self.dapi_centres[self.edges[:,0],1] > self.geo_edge_max/3) & \
-				(self.dapi_centres[self.edges[:,1],1] > self.geo_edge_max/3) & \
+				(self.dapi_centres[self.edges[:,1],1] > self.geo_edge_max/3)
+		if self.x_upper < self.x_size-1:
+			self.edges_outer = self.edges_outer & \
 				(self.dapi_centres[self.edges[:,0],0] < \
 					self.x_upper - self.x_lower - self.geo_edge_max/3) & \
 				(self.dapi_centres[self.edges[:,1],0] < \
-					self.x_upper - self.x_lower - self.geo_edge_max/3) & \
+					self.x_upper - self.x_lower - self.geo_edge_max/3)
+		if self.y_upper < self.y_size-1:
+			self.edges_outer = self.edges_outer & \
 				(self.dapi_centres[self.edges[:,0],1] < \
 					self.y_upper - self.y_lower - self.geo_edge_max/3) & \
 				(self.dapi_centres[self.edges[:,1],1] < \
@@ -1573,48 +1609,61 @@ class Window(QWidget):
 			surface_mesh.export(self.nd2_file.with_suffix(
 					'.{0:s}.stl'.format(time.strftime("%Y.%m.%d-%H.%M.%S"))))
 			fix_normals(surface_mesh)
-			mask = (((points[faces[:,0],0] < (self.x_lower + \
+			mask = np.zeros(faces.shape[0], dtype = bool)
+			if self.x_lower > 0:
+				mask = mask | \
+					((points[faces[:,0],0] < (self.x_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],0] < (self.x_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],0] < (self.x_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7)) | \
+					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7))
+			if self.y_lower > 0:
+				mask = mask | \
 					((points[faces[:,0],1] < (self.y_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],1] < (self.y_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],1] < (self.y_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7)) | \
+					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7))
+			if self.z_lower > 0:
+				mask = mask | \
 					((points[faces[:,0],2] < (self.z_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],2] < (self.z_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],2] < (self.z_lower + \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7)) | \
+					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7))
+			if self.x_upper < self.x_size-1:
+				mask = mask | \
 					((points[faces[:,0],0] > (self.x_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],0] > (self.x_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],0] > (self.x_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7)) | \
+					 (np.abs(surface_mesh.face_normals[:,0]) > 0.7))
+			if self.y_upper < self.y_size-1:
+				mask = mask | \
 					((points[faces[:,0],1] > (self.y_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],1] > (self.y_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],1] > (self.y_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7)) | \
+					 (np.abs(surface_mesh.face_normals[:,1]) > 0.7))
+			if self.z_upper < self.z_size-1:
+				mask = mask | \
 					((points[faces[:,0],2] > (self.z_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,1],2] > (self.z_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
 					 (points[faces[:,2],2] > (self.z_upper - \
 									self.geo_edge_max/3) * self.scale[0]) & \
-					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7)))
+					 (np.abs(surface_mesh.face_normals[:,2]) > 0.7))
 			surface_mesh.update_faces(np.logical_not(mask))
 			fix_normals(surface_mesh)
 			mask = np.zeros(len(surface_mesh.faces), dtype = bool)
